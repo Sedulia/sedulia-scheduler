@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { HttpException, Injectable } from '@nestjs/common';
 import { Provider, User } from '@prisma/client';
 import { CreateOrgUserDto } from '@gitroom/nestjs-libraries/dtos/auth/create.org.user.dto';
 import { LoginUserDto } from '@gitroom/nestjs-libraries/dtos/auth/login.user.dto';
@@ -9,6 +9,7 @@ import { AuthProviderManager } from '@gitroom/backend/services/auth/providers/pr
 import dayjs from 'dayjs';
 import { ForgotReturnPasswordDto } from '@gitroom/nestjs-libraries/dtos/auth/forgot-return.password.dto';
 import { EmailService } from '@gitroom/nestjs-libraries/services/email.service';
+import { RESET_KIND, passwordFingerprint, signResetToken } from '@gitroom/backend/services/auth/reset.token';
 import { NewsletterService } from '@gitroom/nestjs-libraries/newsletter/newsletter.service';
 
 @Injectable()
@@ -19,15 +20,26 @@ export class AuthService {
     private _emailService: EmailService,
     private _providerManager: AuthProviderManager
   ) {}
-  async canRegister(provider: string) {
-    if (
-      process.env.DISABLE_REGISTRATION !== 'true' ||
-      provider === Provider.GENERIC
-    ) {
-      return true;
-    }
+  // Sedulia Social: closed registration is closed for every provider. Upstream let the very first registration in when
+  // the database had no organization (getCount() === 0) and let any generic OAuth provider register; neither remains.
+  // Only an address that already has a user (the owner route makes it) can sign in, see invitedUser.
+  async canRegister(_provider: string) {
+    return process.env.DISABLE_REGISTRATION !== 'true';
+  }
 
-    return (await this._organizationService.getCount()) === 0;
+  private registrationClosed() {
+    return process.env.DISABLE_REGISTRATION === 'true';
+  }
+
+  // The one way into a closed instance by a provider: the verified address already has a LOCAL user, made by the owner
+  // route. The provider proves the address; it never creates a user or an organization.
+  // Only Google and Apple vouch for the address (their providers refuse an unverified one). GitHub, a wallet, Farcaster and a
+  // generic OIDC provider give no such proof, so for them the answer is always "no".
+  private invitedUser(provider: string, email: string | undefined) {
+    if (!email || !['GOOGLE', 'APPLE'].includes(String(provider).toUpperCase())) {
+      return null;
+    }
+    return this._userService.getUserByEmail(email.trim().toLowerCase());
   }
 
   async routeAuth(
@@ -158,6 +170,14 @@ export class AuthService {
       return user;
     }
 
+    if (this.registrationClosed()) {
+      const invited = await this.invitedUser(provider, providerUser.email);
+      if (invited) {
+        return invited;
+      }
+      throw new Error('Registration is disabled');
+    }
+
     if (!(await this.canRegister(provider))) {
       throw new Error('Registration is disabled');
     }
@@ -223,10 +243,10 @@ export class AuthService {
       return false;
     }
 
-    const resetValues = AuthChecker.signJWT({
-      id: user.id,
-      expires: dayjs().add(20, 'minutes').format('YYYY-MM-DD HH:mm:ss'),
-    });
+    const resetValues = signResetToken(
+      user,
+      dayjs().add(20, 'minutes').format('YYYY-MM-DD HH:mm:ss')
+    );
 
     await this._emailService.sendEmailSync(
       user.email,
@@ -235,12 +255,35 @@ export class AuthService {
     );
   }
 
-  forgotReturn(body: ForgotReturnPasswordDto) {
-    const user = AuthChecker.verifyJWT(body.token) as {
-      id: string;
-      expires: string;
-    };
-    if (typeof user.id !== 'string' || dayjs(user.expires).isBefore(dayjs())) {
+  // Only a reset token (kind reset) for a LOCAL user whose password is still the one the token was made for, and not expired.
+  // A session token, an expired link and a link already used all answer false.
+  async forgotReturn(body: ForgotReturnPasswordDto) {
+    let token: any;
+    try {
+      token = AuthChecker.verifyJWT(body.token);
+    } catch (err) {
+      return false;
+    }
+    if (
+      !token ||
+      token.kind !== RESET_KIND ||
+      typeof token.id !== 'string' ||
+      typeof token.pw !== 'string' ||
+      typeof token.expires !== 'string'
+    ) {
+      return false;
+    }
+    const expires = dayjs(token.expires);
+    if (!expires.isValid() || expires.isBefore(dayjs())) {
+      return false;
+    }
+
+    const user = await this._userService.getUserById(token.id);
+    if (
+      !user ||
+      user.providerName !== Provider.LOCAL ||
+      passwordFingerprint(user.password) !== token.pw
+    ) {
       return false;
     }
 
@@ -324,6 +367,16 @@ export class AuthService {
     );
     if (checkExists) {
       return { jwt: await this.jwt(checkExists) };
+    }
+
+    if (this.registrationClosed()) {
+      // Same gate as loginOrRegisterProvider, one step earlier: an invited address signs straight in, a stranger is told now
+      // instead of being sent to a register form that cannot succeed.
+      const invited = await this.invitedUser(provider, user.email);
+      if (invited) {
+        return { jwt: await this.jwt(invited) };
+      }
+      throw new HttpException('Registration is disabled', 403);
     }
 
     return { token };

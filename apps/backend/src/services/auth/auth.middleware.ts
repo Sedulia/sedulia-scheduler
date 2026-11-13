@@ -8,6 +8,7 @@ import { getCookieUrlFromDomain } from '@gitroom/helpers/subdomain/subdomain.man
 import { HttpForbiddenException } from '@gitroom/nestjs-libraries/services/exception.filter';
 import { MastraService } from '@gitroom/nestjs-libraries/chat/mastra.service';
 import { setSentryUserContext } from '@gitroom/nestjs-libraries/sentry/initialize.sentry';
+import { isResetToken } from '@gitroom/backend/services/auth/reset.token';
 
 export const removeAuth = (res: Response) => {
   res.cookie('auth', '', {
@@ -44,6 +45,11 @@ export class AuthMiddleware implements NestMiddleware {
       const orgHeader = req.cookies.showorg || req.headers.showorg;
 
       if (!payload?.id || typeof payload.id !== 'string') {
+        throw new HttpForbiddenException();
+      }
+
+      // A mailed set-password or reset link is not a session.
+      if (isResetToken(payload)) {
         throw new HttpForbiddenException();
       }
 

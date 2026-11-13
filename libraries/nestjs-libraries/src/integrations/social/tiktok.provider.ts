@@ -417,10 +417,12 @@ export class TiktokProvider extends SocialAbstract implements SocialProvider {
     };
   }
 
-  async maxVideoLength(accessToken: string) {
-    const {
-      data: { max_video_post_duration_sec },
-    } = await (
+  // TikTok requires the posting UI to render from the CREATOR's live options rather than a
+  // hardcoded list: "your app must invoke the API and use the latest creator information returned
+  // to display the account's available privacy level options and video/photo interaction settings"
+  // (Query Creator Info). Exposed as a provider function so the composer can call it on render.
+  async creatorInfo(accessToken: string) {
+    const { data } = await (
       await fetch(
         'https://open.tiktokapis.com/v2/post/publish/creator_info/query/',
         {
@@ -432,6 +434,25 @@ export class TiktokProvider extends SocialAbstract implements SocialProvider {
         }
       )
     ).json();
+
+    return data;
+  }
+
+  private requirePrivacyLevel(privacyLevel?: string) {
+    if (!privacyLevel) {
+      throw new BadBody(
+        'tiktok-privacy-level-required',
+        JSON.stringify({ privacy_level: privacyLevel }),
+        Buffer.from(JSON.stringify({ privacy_level: privacyLevel })),
+        'Select who can see this video before posting to TikTok.'
+      );
+    }
+
+    return privacyLevel;
+  }
+
+  async maxVideoLength(accessToken: string) {
+    const { max_video_post_duration_sec } = await this.creatorInfo(accessToken);
 
     return {
       maxDurationSeconds: max_video_post_duration_sec,
@@ -573,8 +594,11 @@ export class TiktokProvider extends SocialAbstract implements SocialProvider {
             ? { title: firstPost.message }
             : {}),
           ...(isPhoto ? { description: firstPost.message } : {}),
-          privacy_level:
-            firstPost.settings.privacy_level || 'PUBLIC_TO_EVERYONE',
+          // No fallback. TikTok's UX guidelines require the creator to pick the privacy level
+          // explicitly ("there should be no default value"), so defaulting here would silently
+          // publish PUBLIC content the user never chose - the exact outcome the guideline exists
+          // to prevent. Fail loudly instead.
+          privacy_level: this.requirePrivacyLevel(firstPost.settings.privacy_level),
           ...(isPhoto
             ? {}
             : { disable_duet: !this.assetBoolean(firstPost.settings.duet) }),

@@ -1,0 +1,65 @@
+# Sedulia's fork: the jest suites on every pull request into a sedulia/* branch.
+#
+# Lean by design, on GitHub's runners: pull_request only (never pull_request_target),
+# no secrets, a read only token, one job, a newer push cancels the older run, a hard timeout, and only the
+# three standalone jest configs. Every action is a GitHub owned action pinned by its full commit sha, so the
+# repository can allow GitHub owned actions only. pnpm comes from corepack, at the version package.json names.
+name: Sedulia jest
+
+on:
+  pull_request:
+    branches:
+      - 'sedulia/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sedulia-jest-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  jest:
+    name: sedulia-jest
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CI: 'true'
+      COREPACK_ENABLE_DOWNLOAD_PROMPT: '0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # package.json engines.node
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22.23.4'
+
+      - name: pnpm from corepack (package.json packageManager)
+        id: pnpm
+        run: |
+          corepack enable
+          pnpm --version
+          echo "store=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.pnpm.outputs.store }}
+          key: ${{ runner.os }}-pnpm-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-
+
+      - name: install (the lockfile, unchanged)
+        run: pnpm install --frozen-lockfile
+
+      - name: jest, backend
+        run: node_modules/.bin/jest -c apps/backend/jest.config.cjs --ci
+
+      - name: jest, nestjs-libraries
+        run: node_modules/.bin/jest -c libraries/nestjs-libraries/jest.config.cjs --ci
+        env:
+          UPLOAD_DIRECTORY: ${{ runner.temp }}/uploads
+
+      - name: jest, frontend
+        run: node_modules/.bin/jest -c apps/frontend/jest.config.cjs --ci

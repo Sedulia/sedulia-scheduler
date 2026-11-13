@@ -50,10 +50,21 @@ export class GoogleProvider extends AuthProviderAbstract {
 
   async getUser(providerToken: string) {
     const client = makeClient(defaultRedirect());
+    // The token comes from the caller (POST /auth/login and /auth/register carry it), so it must have been issued to THIS
+    // app: a Google access token minted for any other site must never sign anyone in.
+    const info = await client.getTokenInfo(providerToken);
+    if (!process.env.YOUTUBE_CLIENT_ID || info.aud !== process.env.YOUTUBE_CLIENT_ID) {
+      throw new Error('Google token was not issued to this app');
+    }
     client.setCredentials({ access_token: providerToken });
     const { data } = await google
       .oauth2({ version: 'v2', auth: client })
       .userinfo.get();
+
+    // Closed registration signs an invited address in by its email, so Google must vouch for that address.
+    if (data.verified_email !== true) {
+      throw new Error('Email is not verified by Google');
+    }
 
     return {
       id: data.id!,

@@ -23,6 +23,7 @@ import {
 import { HtmlComponent } from '@gitroom/frontend/components/layout/html.component';
 import Script from 'next/script';
 import { ChangeDirClient } from '@gitroom/frontend/components/new-layout/change.dir.client';
+import { SourceCodeLink } from '@gitroom/frontend/components/layout/source.code.link';
 
 export default async function AppLayout({ children }: { children: ReactNode }) {
   const cookieStore = await cookies();
@@ -107,6 +108,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
                 <UtmSaver />
                 {children}
               </LayoutContext>
+              <SourceCodeLink url={process.env.SOURCE_CODE_URL} />
             </Plausible>
           </SentryComponent>
         </VariableContextComponent>

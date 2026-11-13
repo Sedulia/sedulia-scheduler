@@ -8,29 +8,17 @@ import { Input } from '@gitroom/react/form/input';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { classValidatorResolver } from '@hookform/resolvers/class-validator';
 import { CreateOrgUserDto } from '@gitroom/nestjs-libraries/dtos/auth/create.org.user.dto';
-import { GithubProvider } from '@gitroom/frontend/components/auth/providers/github.provider';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { LoadingComponent } from '@gitroom/frontend/components/layout/loading';
 import clsx from 'clsx';
 import { GoogleProvider } from '@gitroom/frontend/components/auth/providers/google.provider';
 import { AppleProvider } from '@gitroom/frontend/components/auth/providers/apple.provider';
-import { OauthProvider } from '@gitroom/frontend/components/auth/providers/oauth.provider';
 import { useFireEvents } from '@gitroom/helpers/utils/use.fire.events';
 import { useVariables } from '@gitroom/react/helpers/variable.context';
 import { useTrack } from '@gitroom/react/helpers/use.track';
 import { TrackEnum } from '@gitroom/nestjs-libraries/user/track.enum';
-import { FarcasterProvider } from '@gitroom/frontend/components/auth/providers/farcaster.provider';
-import dynamic from 'next/dynamic';
-import { WalletUiProvider } from '@gitroom/frontend/components/auth/providers/placeholder/wallet.ui.provider';
 import { useT } from '@gitroom/react/translation/get.transation.service.client';
 import useCookie from 'react-use-cookie';
-const WalletProvider = dynamic(
-  () => import('@gitroom/frontend/components/auth/providers/wallet.provider'),
-  {
-    ssr: false,
-    loading: () => <WalletUiProvider />,
-  }
-);
 type Inputs = {
   email: string;
   password: string;
@@ -45,26 +33,47 @@ export function Register() {
   const [code, setCode] = useState(getQuery?.get('code') || '');
   const [state] = useState(getQuery?.get('state') || '');
   const [show, setShow] = useState(false);
+  const [refused, setRefused] = useState(false);
   useEffect(() => {
     if (provider && code) {
       load();
     }
   }, []);
   const load = useCallback(async () => {
-    const { token } = await (
-      await fetch(`/auth/oauth/${provider?.toUpperCase() || 'LOCAL'}/exists`, {
+    const response = await fetch(
+      `/auth/oauth/${provider?.toUpperCase() || 'LOCAL'}/exists`,
+      {
         method: 'POST',
         body: JSON.stringify({
           code,
           state,
         }),
-      })
-    ).json();
+      }
+    );
+    // Closed registration: a provider address nobody invited is refused (403), not sent on to a register form.
+    if (response.status === 403) {
+      setRefused(true);
+      return;
+    }
+    const { token } = await response.json();
     if (token) {
       setCode(token);
       setShow(true);
     }
   }, [provider, code]);
+  if (refused) {
+    return (
+      <div className="flex flex-col gap-[12px]">
+        <div>
+          This address has not been invited to Sedulia Social, so it cannot
+          sign in.
+        </div>
+        <Link href="/auth/login" className="underline cursor-pointer">
+          Back to sign in
+        </Link>
+      </div>
+    );
+  }
   if (!code && !provider) {
     return <RegisterAfter token="" provider="LOCAL" />;
   }
@@ -92,13 +101,7 @@ export function RegisterAfter({
   provider: string;
 }) {
   const t = useT();
-  const {
-    isGeneral,
-    genericOauth,
-    neynarClientId,
-    appleClientId,
-    billingEnabled,
-  } = useVariables();
+  const { appleClientId } = useVariables();
   const [loading, setLoading] = useState(false);
   const router = useRouter();
   const fireEvents = useFireEvents();
@@ -166,21 +169,12 @@ export function RegisterAfter({
             {t('continue_with', 'Continue With')}
           </div>
           <div className="flex flex-col text-[14px]">
-            {!isAfterProvider &&
-              (!isGeneral ? (
-                <GithubProvider />
-              ) : (
-                <div className="gap-[8px] flex">
-                  {genericOauth && isGeneral ? (
-                    <OauthProvider />
-                  ) : (
-                    <GoogleProvider />
-                  )}
-                  {!!appleClientId && <AppleProvider />}
-                  {!!neynarClientId && <FarcasterProvider />}
-                  {billingEnabled && <WalletProvider />}
-                </div>
-              ))}
+            {!isAfterProvider && (
+              <div className="gap-[8px] flex">
+                <GoogleProvider />
+                {!!appleClientId && <AppleProvider />}
+              </div>
+            )}
             {!isAfterProvider && (
               <div className="h-[20px] mb-[24px] mt-[24px] relative">
                 <div className="absolute w-full h-[1px] bg-fifth top-[50%] -translate-y-[50%]" />
@@ -220,30 +214,6 @@ export function RegisterAfter({
                   type="text"
                   placeholder={t('label_company', 'Company')}
                 />
-              </div>
-              <div className={clsx('text-[12px]')}>
-                {t(
-                  'by_registering_you_agree_to_our',
-                  'By registering you agree to our'
-                )}
-                &nbsp;
-                <a
-                  href={`https://postiz.com/terms`}
-                  className="underline hover:font-bold"
-                  rel="nofollow"
-                >
-                  {t('terms_of_service', 'Terms of Service')}
-                </a>
-                &nbsp;
-                {t('and', 'and')}&nbsp;
-                <a
-                  href={`https://postiz.com/privacy`}
-                  rel="nofollow"
-                  className="underline hover:font-bold"
-                >
-                  {t('privacy_policy', 'Privacy Policy')}
-                </a>
-                &nbsp;
               </div>
               <div className="text-center mt-6">
                 <div className="w-full flex">

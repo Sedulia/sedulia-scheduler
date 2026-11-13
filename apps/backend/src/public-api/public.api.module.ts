@@ -11,11 +11,16 @@ import { CodesService } from '@gitroom/nestjs-libraries/services/codes.service';
 import { PublicIntegrationsController } from '@gitroom/backend/public-api/routes/v1/public.integrations.controller';
 import { PublicAuthMiddleware } from '@gitroom/backend/services/auth/public.auth.middleware';
 import { SuperAdminGuard } from '@gitroom/backend/services/auth/super.admin.guard';
+import { ProvisioningController } from '@gitroom/backend/public-api/provisioning/provisioning.controller';
+import { ProvisioningRepository } from '@gitroom/nestjs-libraries/database/prisma/organizations/provisioning.repository';
+import { ProvisioningService } from '@gitroom/nestjs-libraries/database/prisma/organizations/provisioning.service';
 
 const authenticatedController = [PublicIntegrationsController];
 @Module({
   imports: [UploadModule],
-  controllers: process.env.MCP_ONLY ? [] : [...authenticatedController],
+  controllers: process.env.MCP_ONLY
+    ? []
+    : [...authenticatedController, ProvisioningController],
   providers: [
     AuthService,
     StripeService,
@@ -26,6 +31,8 @@ const authenticatedController = [PublicIntegrationsController];
     CodesService,
     IntegrationManager,
     SuperAdminGuard,
+    ProvisioningRepository,
+    ProvisioningService,
   ],
   get exports() {
     return [...this.imports, ...this.providers];

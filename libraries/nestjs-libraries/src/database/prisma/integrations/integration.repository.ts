@@ -8,6 +8,10 @@ import { IntegrationTimeDto } from '@gitroom/nestjs-libraries/dtos/integrations/
 import { UploadFactory } from '@gitroom/nestjs-libraries/upload/upload.factory';
 import { PlugDto } from '@gitroom/nestjs-libraries/dtos/plugs/plug.dto';
 
+// A removed network token is empty, never a hash. Retention: tokens go at
+// disconnect, at channel delete and at workspace closure (see retention/).
+const EMPTY_TOKENS = { token: '', refreshToken: '' } as const;
+
 @Injectable()
 export class IntegrationRepository {
   private storage = UploadFactory.createStorage();
@@ -244,6 +248,8 @@ export class IntegrationRepository {
       },
       data: {
         refreshNeeded: true,
+        // the token is removed at disconnect (empty, never hashed)
+        ...EMPTY_TOKENS,
       },
     });
   }
@@ -331,7 +337,10 @@ export class IntegrationRepository {
     isBetweenSteps = false,
     refresh?: string,
     timezone?: number,
-    customInstanceDetails?: string
+    customInstanceDetails?: string,
+    // the login that made this connect, given for a Facebook or Instagram reconnect so the row names the
+    // person whose token it now holds (Meta's deletion callbacks find a user's channels by it)
+    loginId?: string
   ) {
     const postTimes = timezone
       ? {
@@ -342,6 +351,16 @@ export class IntegrationRepository {
           ]),
         }
       : {};
+    // the picture this write may replace, read first so its copy in our storage can go after the write
+    const previousPicture = picture
+      ? (
+          await this._integration.model.integration.findFirst({
+            where: { organizationId: org, internalId },
+            select: { picture: true },
+          })
+        )?.picture
+      : undefined;
+
     const upsert = await this._integration.model.integration.upsert({
       where: {
         organizationId_internalId: {
@@ -395,6 +414,7 @@ export class IntegrationRepository {
         organizationId: org,
         deletedAt: null,
         refreshNeeded: false,
+        ...(loginId ? { rootInternalId: loginId } : {}),
       },
     });
 
@@ -415,6 +435,8 @@ export class IntegrationRepository {
             not: upsert.id,
           },
           rootInternalId: rootId,
+          // a deleted channel never gets a token back
+          deletedAt: null,
         },
         data: {
           token,
@@ -427,7 +449,59 @@ export class IntegrationRepository {
       });
     }
 
+    // Retention rule: the replaced picture copy leaves our storage, unless another channel
+    // still points at it.
+    if (previousPicture && previousPicture !== picture) {
+      const stillUsed = await this._integration.model.integration.findFirst({
+        where: { picture: previousPicture },
+        select: { id: true },
+      });
+      if (!stillUsed) {
+        await this.removeOwnPicture(previousPicture);
+      }
+    }
+
     return upsert;
+  }
+
+  /**
+   * A token refresh's write, made only if the channel is still live: not deleted and not waiting for a
+   * reconnect. One conditional statement, so a delete or a disconnect that lands while the network is
+   * answering wins. Returns false when nothing was written.
+   */
+  async writeRefreshedTokens(
+    integration: { id: string; organizationId: string; internalId: string; rootInternalId?: string | null },
+    oneTimeToken: boolean,
+    refreshed: { accessToken: string; refreshToken?: string; expiresIn?: number }
+  ) {
+    const live = { deletedAt: null as Date | null, refreshNeeded: false };
+    const tokens = {
+      token: refreshed.accessToken,
+      // never wipe a stored refresh token with an empty one
+      ...(refreshed.refreshToken ? { refreshToken: refreshed.refreshToken } : {}),
+      ...(refreshed.expiresIn
+        ? { tokenExpiration: new Date(Date.now() + refreshed.expiresIn * 1000) }
+        : {}),
+    };
+    const written = await this._integration.model.integration.updateMany({
+      where: { id: integration.id, organizationId: integration.organizationId, ...live },
+      data: { ...tokens, inBetweenSteps: false },
+    });
+    if (!written.count) {
+      return false;
+    }
+
+    if (oneTimeToken) {
+      await this._integration.model.integration.updateMany({
+        where: {
+          id: { not: integration.id },
+          rootInternalId: integration.rootInternalId || integration.internalId,
+          ...live,
+        },
+        data: tokens,
+      });
+    }
+    return true;
   }
 
   needsToBeRefreshed() {
@@ -461,6 +535,9 @@ export class IntegrationRepository {
       },
       data: {
         refreshNeeded: true,
+        // the network refused the refresh token (access removed or revoked): the
+        // token is removed at deauthorization, the channel waits for a reconnect
+        ...EMPTY_TOKENS,
       },
     });
   }
@@ -821,8 +898,29 @@ export class IntegrationRepository {
       },
       data: {
         deletedAt: new Date(),
+        // the token is removed when the channel is deleted (empty, never hashed)
+        ...EMPTY_TOKENS,
       },
     });
+  }
+
+  // Best effort: a picture that is not in our storage, or is already gone, is skipped.
+  private async removeOwnPicture(picture?: string | null) {
+    if (!picture) {
+      return;
+    }
+    const own = [
+      process.env.FRONTEND_URL && `${process.env.FRONTEND_URL}/uploads`,
+      process.env.CLOUDFLARE_BUCKET_URL,
+    ].filter(Boolean) as string[];
+    if (!own.some((prefix) => picture.startsWith(prefix))) {
+      return;
+    }
+    try {
+      await this.storage.removeFile(picture);
+    } catch (err) {
+      /** already gone, or not ours to remove: the retention purge retries nothing here */
+    }
   }
 
   async deleteIntegrationsForAccount(org: string) {
@@ -839,11 +937,26 @@ export class IntegrationRepository {
       },
     });
 
+    // Every token of the workspace is emptied in one write, before anything
+    // else is changed (never hashed: a hash is still a value derived from it).
+    await this._integration.model.integration.updateMany({
+      where: {
+        organizationId: org,
+      },
+      data: EMPTY_TOKENS,
+    });
+
     const integrations = await this._integration.model.integration.findMany({
       where: {
         organizationId: org,
       },
     });
+
+    // The profile pictures copied to our own storage go with the workspace; the
+    // column is nulled below, so this is the last place that knows the file.
+    for (const integration of integrations) {
+      await this.removeOwnPicture(integration.picture);
+    }
 
     // md5 is deterministic, so a hashed rootInternalId can still be matched
     // by checkPreviousConnections when the same channel is connected again
@@ -858,10 +971,6 @@ export class IntegrationRepository {
           internalId: hash(integration.internalId),
           rootInternalId: integration.rootInternalId
             ? hash(integration.rootInternalId)
-            : null,
-          token: hash(integration.token),
-          refreshToken: integration.refreshToken
-            ? hash(integration.refreshToken)
             : null,
           profile: integration.profile ? hash(integration.profile) : null,
           customInstanceDetails: integration.customInstanceDetails

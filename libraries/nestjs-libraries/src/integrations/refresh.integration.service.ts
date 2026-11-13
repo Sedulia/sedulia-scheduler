@@ -7,6 +7,7 @@ import {
   SocialProvider,
 } from '@gitroom/nestjs-libraries/integrations/social/social.integrations.interface';
 import { TemporalService } from 'nestjs-temporal-core';
+import { IntegrationRepository } from '@gitroom/nestjs-libraries/database/prisma/integrations/integration.repository';
 
 @Injectable()
 export class RefreshIntegrationService {
@@ -14,7 +15,8 @@ export class RefreshIntegrationService {
     private _integrationManager: IntegrationManager,
     @Inject(forwardRef(() => IntegrationService))
     private _integrationService: IntegrationService,
-    private _temporalService: TemporalService
+    private _temporalService: TemporalService,
+    private _integrationRepository: IntegrationRepository
   ) {}
   async refresh(integration: Integration, cause = ''): Promise<false | AuthTokenDetails> {
     const socialProvider = this._integrationManager.getSocialIntegration(
@@ -27,19 +29,17 @@ export class RefreshIntegrationService {
       return false as const;
     }
 
-    await this._integrationService.createOrUpdateIntegration(
-      undefined,
+    // Retention rule: a conditional write. A refresh that lands after the channel was deleted
+    // or disconnected writes nothing, so it never clears deletedAt or refreshNeeded and never puts a token
+    // back. The channel's name and picture are not rewritten by a refresh, so no picture copy is made.
+    const written = await this._integrationRepository.writeRefreshedTokens(
+      integration,
       !!socialProvider.oneTimeToken,
-      integration.organizationId,
-      integration.name,
-      integration.picture!,
-      'social',
-      integration.internalId,
-      integration.providerIdentifier,
-      refresh.accessToken,
-      refresh.refreshToken,
-      refresh.expiresIn
+      refresh
     );
+    if (!written) {
+      return false as const;
+    }
 
     return refresh;
   }

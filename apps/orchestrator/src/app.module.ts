@@ -10,6 +10,9 @@ import { MediaActivity } from '@gitroom/orchestrator/activities/media.activity';
 import { ClippingActivity } from '@gitroom/orchestrator/activities/clipping.activity';
 import { VideoModule } from '@gitroom/nestjs-libraries/videos/video.module';
 import { HealthController } from '@gitroom/orchestrator/health.controller';
+import { RetentionActivity } from '@gitroom/orchestrator/activities/retention.activity';
+import { RetentionPurgeStarter } from '@gitroom/orchestrator/retention.purge.starter';
+import { RetentionService } from '@gitroom/nestjs-libraries/database/prisma/retention/retention.service';
 
 const activities = [
   PostActivity,
@@ -19,6 +22,7 @@ const activities = [
   VideoActivity,
   MediaActivity,
   ClippingActivity,
+  RetentionActivity,
 ];
 @Module({
   imports: [
@@ -27,7 +31,7 @@ const activities = [
     getTemporalModule(true, require.resolve('./workflows'), activities),
   ],
   controllers: [HealthController],
-  providers: [...activities],
+  providers: [...activities, RetentionService, RetentionPurgeStarter],
   get exports() {
     return [...this.providers, ...this.imports];
   },

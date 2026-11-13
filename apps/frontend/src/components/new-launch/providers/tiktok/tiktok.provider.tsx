@@ -4,6 +4,7 @@ import {
   FC,
   useMemo,
 } from 'react';
+import useSWR from 'swr';
 import {
   PostComment,
   withProvider,
@@ -19,6 +20,35 @@ import { Input } from '@gitroom/react/form/input';
 import { TiktokPreview } from '@gitroom/frontend/components/new-launch/providers/tiktok/tiktok.preview';
 import { TikTokMusicSelector } from '@gitroom/frontend/components/new-launch/providers/tiktok/tiktok.music';
 import { TikTokLocationSelector } from '@gitroom/frontend/components/new-launch/providers/tiktok/tiktok.location';
+import { useCustomProviderFunction } from '@gitroom/frontend/components/launches/helpers/use.custom.provider.function';
+
+// Shape returned by TikTok's creator_info/query endpoint.
+interface TikTokCreatorInfo {
+  creator_nickname?: string;
+  creator_username?: string;
+  privacy_level_options?: string[];
+  comment_disabled?: boolean;
+  duet_disabled?: boolean;
+  stitch_disabled?: boolean;
+}
+
+// TikTok requires the posting page to render from the creator's LIVE options rather than a
+// hardcoded list: "your app must invoke the API and use the latest creator information returned to
+// display the account's available privacy level options and video/photo interaction settings."
+// (Query Creator Info). Not cached across mounts - "latest" is the whole point.
+const useTikTokCreatorInfo = () => {
+  const customFunc = useCustomProviderFunction();
+  const { integration } = useIntegration();
+
+  // The Business API provider (tiktok-business) has no creator_info endpoint, so it is skipped.
+  return useSWR<TikTokCreatorInfo>(
+    integration?.id && integration.identifier !== 'tiktok-business'
+      ? `tiktok-creator-info-${integration.id}`
+      : null,
+    () => customFunc.get('creatorInfo'),
+    { revalidateOnFocus: false, revalidateIfStale: true }
+  );
+};
 
 const TikTokSettings: FC<{
   values?: any;
@@ -26,10 +56,13 @@ const TikTokSettings: FC<{
   const { watch, register } = useSettings();
   const { value, integration } = useIntegration();
   const t = useT();
+  const { data: creatorInfo, error: creatorInfoFailed } = useTikTokCreatorInfo();
 
   // Music and location come from the Business API (v1.3) - the legacy Content
   // Posting API used by the "tiktok" identifier has no such fields.
   const isBusiness = integration?.identifier === 'tiktok-business';
+  // creator_info only exists for the Content Posting API; Business has no live options to wait for.
+  const creatorReady = isBusiness || !!creatorInfo;
 
   const isTitle = useMemo(() => {
     return value?.[0]?.image?.some((p) => (p?.path?.indexOf?.('mp4') ?? -1) === -1);
@@ -65,24 +98,23 @@ const TikTokSettings: FC<{
     );
   }, [hasMedia, isUploadMode, isVideo, t]);
 
-  const privacyLevel = [
-    {
-      value: 'PUBLIC_TO_EVERYONE',
-      label: t('public_to_everyone', 'Public to everyone'),
-    },
-    {
-      value: 'MUTUAL_FOLLOW_FRIENDS',
-      label: t('mutual_follow_friends', 'Mutual follow friends'),
-    },
-    {
-      value: 'FOLLOWER_OF_CREATOR',
-      label: t('follower_of_creator', 'Follower of creator'),
-    },
-    {
-      value: 'SELF_ONLY',
-      label: t('self_only', 'Self only'),
-    },
-  ];
+  const privacyLevelLabels: Record<string, string> = {
+    PUBLIC_TO_EVERYONE: t('public_to_everyone', 'Public to everyone'),
+    MUTUAL_FOLLOW_FRIENDS: t('mutual_follow_friends', 'Mutual follow friends'),
+    FOLLOWER_OF_CREATOR: t('follower_of_creator', 'Follower of creator'),
+    SELF_ONLY: t('self_only', 'Self only'),
+  };
+
+  // Only the levels THIS creator is allowed to use. A private account, for example, is not offered
+  // PUBLIC_TO_EVERYONE - offering it anyway produces a privacy_level_option_mismatch at publish.
+  const privacyLevel = (
+    isBusiness
+      ? Object.keys(privacyLevelLabels)
+      : creatorInfo?.privacy_level_options ?? []
+  ).map((option) => ({
+    value: option,
+    label: privacyLevelLabels[option] ?? option,
+  }));
   const contentPostingMethod = [
     {
       value: 'DIRECT_POST',
@@ -134,12 +166,16 @@ const TikTokSettings: FC<{
       )}
       {isTitle && <Input label="Title" {...register('title')} maxLength={89} />}
       <div className={directPostOnly}>
+        {/*
+          NO DEFAULT VALUE. TikTok's UX guideline 2(b) is explicit: "Users must manually select the
+          privacy status from a dropdown and there should be no default value." Defaulting this to
+          PUBLIC_TO_EVERYONE is the single most-cited reason self-hosted deployments fail the
+          Content Posting API audit.
+        */}
         <Select
           label={t('label_who_can_see_this_video', 'Who can see this video?')}
-          disabled={isUploadMode}
-          {...register('privacy_level', {
-            value: 'PUBLIC_TO_EVERYONE',
-          })}
+          disabled={isUploadMode || !creatorReady}
+          {...register('privacy_level')}
         >
           <option value="">{t('select', 'Select')}</option>
           {privacyLevel.map((item) => (
@@ -148,6 +184,27 @@ const TikTokSettings: FC<{
             </option>
           ))}
         </Select>
+        {!isUploadMode && creatorInfo?.creator_nickname && (
+          // The creator must be able to see WHICH account they are about to post to.
+          <div className="text-[12px] mt-[6px] text-customColor18">
+            {t('tiktok_posting_as', 'Posting to')}{' '}
+            <span className="font-bold">{creatorInfo.creator_nickname}</span>
+            {creatorInfo.creator_username ? ` (@${creatorInfo.creator_username})` : ''}
+          </div>
+        )}
+        {!isUploadMode && !isBusiness && !creatorInfo && !creatorInfoFailed && (
+          <div className="text-[12px] mt-[6px]">
+            {t('tiktok_loading_creator_info', 'Loading your TikTok posting options...')}
+          </div>
+        )}
+        {!isUploadMode && !isBusiness && creatorInfoFailed && (
+          <div className="text-[12px] mt-[6px] text-red-600">
+            {t(
+              'tiktok_creator_info_failed',
+              'Could not load your TikTok posting options. Reconnect the channel and try again.'
+            )}
+          </div>
+        )}
       </div>
       <div className="text-[14px] mt-[10px] mb-[18px] text-balance">
         {t(
@@ -228,10 +285,12 @@ const TikTokSettings: FC<{
           {t('tiktok_video_features', 'Video features')}
         </div>
         <div className="flex gap-[40px]">
+          {/* Greyed out when the creator has duet disabled: "If the creator_info API reports an
+              interaction disabled, your UX must disable and grey out the checkbox." */}
           <Checkbox
             variant="hollow"
             label={t('label_duet', 'Allow Duet')}
-            disabled={isUploadMode}
+            disabled={isUploadMode || !creatorReady || !!creatorInfo?.duet_disabled}
             {...register('duet', {
               value: false,
             })}
@@ -239,7 +298,7 @@ const TikTokSettings: FC<{
           <Checkbox
             label={t('label_stitch', 'Allow Stitch')}
             variant="hollow"
-            disabled={isUploadMode}
+            disabled={isUploadMode || !creatorReady || !!creatorInfo?.stitch_disabled}
             {...register('stitch', {
               value: false,
             })}
@@ -255,12 +314,14 @@ const TikTokSettings: FC<{
         </div>
         <hr className="my-[15px] mb-[25px] border-tableBorder" />
         <div className="flex flex-col gap-[20px]">
+          {/* Unchecked by default. Guideline: "Users must manually turn on these interaction
+              settings and none should be checked by default." This defaulted to true. */}
           <Checkbox
             label={t('label_comments', 'Allow Comments')}
             variant="hollow"
-            disabled={isUploadMode}
+            disabled={isUploadMode || !creatorReady || !!creatorInfo?.comment_disabled}
             {...register('comment', {
-              value: true,
+              value: false,
             })}
           />
           <Checkbox
@@ -346,34 +407,38 @@ const TikTokSettings: FC<{
               'This video will be classified as Branded Content.'
             )}
           </div>
-          {(brand_organic_toggle || brand_content_toggle) && (
-            <div className="my-[10px] text-[14px] text-balance">
-              {t(
-                'by_posting_you_agree_to_tiktoks',
-                "By posting, you agree to TikTok's"
-              )}
-              {[
-                brand_organic_toggle || brand_content_toggle ? (
-                  <a
-                    target="_blank"
-                    className="text-[#B69DEC] hover:underline"
-                    href="https://www.tiktok.com/legal/page/global/music-usage-confirmation/en"
-                  >
-                    {t('music_usage_confirmation', 'Music Usage Confirmation')}
-                  </a>
-                ) : undefined,
-                brand_content_toggle ? <> {t('and', 'and')} </> : undefined,
-                brand_content_toggle ? (
-                  <a
-                    target="_blank"
-                    className="text-[#B69DEC] hover:underline"
-                    href="https://www.tiktok.com/legal/page/global/bc-policy/en"
-                  >
-                    {t('branded_content_policy', 'Branded Content Policy')}
-                  </a>
-                ) : undefined,
-              ].filter((f) => f)}
-            </div>
+        </div>
+        {/*
+          The consent declaration is ALWAYS visible for a direct post: not gated behind the branded
+          toggles, and not nested inside the (hidden-until-`disclose`) commercial-content block,
+          where it was unreachable for a normal post. TikTok's guideline requires the declaration
+          above the publish button for every post, and only swaps in the Branded Content Policy when
+          Branded Content is selected.
+        */}
+        <div className="my-[10px] text-[14px] text-balance">
+          {t(
+            'by_posting_you_agree_to_tiktoks',
+            "By posting, you agree to TikTok's"
+          )}{' '}
+          <a
+            target="_blank"
+            className="text-[#B69DEC] hover:underline"
+            href="https://www.tiktok.com/legal/page/global/music-usage-confirmation/en"
+          >
+            {t('music_usage_confirmation', 'Music Usage Confirmation')}
+          </a>
+          {brand_content_toggle && (
+            <>
+              {' '}
+              {t('and', 'and')}{' '}
+              <a
+                target="_blank"
+                className="text-[#B69DEC] hover:underline"
+                href="https://www.tiktok.com/legal/page/global/bc-policy/en"
+              >
+                {t('branded_content_policy', 'Branded Content Policy')}
+              </a>
+            </>
           )}
         </div>
       </div>

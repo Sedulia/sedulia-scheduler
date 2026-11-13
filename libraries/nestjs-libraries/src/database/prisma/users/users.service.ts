@@ -7,6 +7,7 @@ import { TimezoneDto } from '@gitroom/nestjs-libraries/dtos/users/timezone.dto';
 import { OrganizationRepository } from '@gitroom/nestjs-libraries/database/prisma/organizations/organization.repository';
 import { IntegrationRepository } from '@gitroom/nestjs-libraries/database/prisma/integrations/integration.repository';
 import { NotificationService } from '@gitroom/nestjs-libraries/database/prisma/notifications/notification.service';
+import { issueDeletionCode } from '@gitroom/nestjs-libraries/database/prisma/retention/deletion.code';
 
 @Injectable()
 export class UsersService {
@@ -149,7 +150,18 @@ export class UsersService {
         .join(', ')}`
     );
 
-    return { deletedOrgs };
+    // One status code per closed workspace, for the deletion status page. The deletion is already done,
+    // so a missing JWT_SECRET only means no code is returned.
+    const deletionCodes: string[] = [];
+    for (const org of deletedOrgs) {
+      try {
+        deletionCodes.push(issueDeletionCode('workspace', org.id));
+      } catch {
+        // no code can be signed without JWT_SECRET
+      }
+    }
+
+    return { deletedOrgs, deletionCodes };
   }
 
   activateUser(id: string) {

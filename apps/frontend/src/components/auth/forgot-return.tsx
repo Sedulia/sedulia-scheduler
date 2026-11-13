@@ -53,7 +53,7 @@ export function ForgotReturn({ token }: { token: string }) {
       <form onSubmit={form.handleSubmit(onSubmit)}>
         <div>
           <h1 className="text-3xl font-bold text-start mb-4 cursor-pointer">
-            {t('forgot_password_1', 'Forgot Password')}
+            {t('set_your_password', 'Set your password')}
           </h1>
         </div>
         {!state ? (

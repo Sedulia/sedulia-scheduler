@@ -361,7 +361,14 @@ export class UsersController {
       }
     }
 
-    await this._userService.deleteAccount(user.id);
+    const { deletionCodes } = await this._userService.deleteAccount(user.id);
+    if (deletionCodes[0] && process.env.NEXT_PUBLIC_BACKEND_URL) {
+      // where the deletion status page for the closed workspace lives
+      response.header(
+        'deletion-status',
+        `${process.env.NEXT_PUBLIC_BACKEND_URL.replace(/\/+$/, '')}/meta-callbacks/deletion-status/${deletionCodes[0]}`
+      );
+    }
 
     return this.logout(response);
   }

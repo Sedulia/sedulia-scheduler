@@ -132,7 +132,16 @@ export class AppleProvider extends AuthProviderAbstract {
         audience,
         issuer: 'https://appleid.apple.com',
       }
-    ) as unknown as { sub: string; email: string };
+    ) as unknown as {
+      sub: string;
+      email: string;
+      email_verified?: boolean | string;
+    };
+
+    // Closed registration signs an invited address in by its email, so Apple must vouch for that address.
+    if (payload.email_verified !== true && payload.email_verified !== 'true') {
+      throw new Error('Email is not verified by Apple');
+    }
 
     return {
       id: payload.sub,

@@ -9,6 +9,7 @@ on:
 
 jobs:
   build-containers-common:
+    if: github.repository == 'gitroomhq/postiz-app'
     runs-on: ubuntu-latest
     outputs:
       containerver: ${{ steps.getcontainerver.outputs.containerver }}
@@ -19,6 +20,7 @@ jobs:
           echo "containerver=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
 
   build-containers:
+    if: github.repository == 'gitroomhq/postiz-app'
     needs: build-containers-common
     strategy:
       matrix:
@@ -59,6 +61,7 @@ jobs:
             --output "type=registry,name=ghcr.io/gitroomhq/postiz-app:${{ env.CONTAINERVER }}-${{ matrix.arch }}" .
 
   build-container-manifest:
+    if: github.repository == 'gitroomhq/postiz-app'
     needs: [build-containers, build-containers-common]
     runs-on: ubuntu-latest
     steps:

@@ -13,6 +13,7 @@ model Organization {
   name                String
   description         String?
   apiKey              String?
+  externalRef         String?              @unique
   paymentId           String?
   streakSince         DateTime?
   createdAt           DateTime             @default(now())

@@ -98,6 +98,9 @@ export class NoAuthIntegrationsController {
       await ioRedis.del(`onboarding:${body.state}`);
     }
 
+    // The Facebook or Instagram login that made a reconnect: the row then holds that person's token.
+    let reconnectLoginId: string | undefined;
+
     const {
       error,
       accessToken,
@@ -140,6 +143,9 @@ export class NoAuthIntegrationsController {
               refresh,
               auth.accessToken
             );
+            if (['facebook', 'instagram'].includes(integration)) {
+              reconnectLoginId = String(auth.id);
+            }
             // keep the fresh refresh token and expiration from the new
             // authentication, otherwise the stored refresh token is wiped and
             // the channel breaks again as soon as the access token expires
@@ -267,7 +273,8 @@ export class NoAuthIntegrationsController {
           ? AuthService.fixedEncryption(
               Buffer.from(body.code, 'base64').toString()
             )
-          : undefined
+          : undefined,
+        reconnectLoginId
       );
 
     this._refreshIntegrationService

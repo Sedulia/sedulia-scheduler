@@ -77,6 +77,12 @@ export class TikTokDto {
   })
   title: string;
 
+  // Required for a DIRECT_POST, and deliberately NOT defaulted anywhere: TikTok's UX guideline
+  // 2(b) says "Users must manually select the privacy status from a dropdown and there should be
+  // no default value", so an empty value here must fail rather than silently become PUBLIC.
+  // Skipped for UPLOAD, where TikTok ignores it entirely and the composer hides the field - without
+  // this ValidateIf, removing the default would break every UPLOAD post.
+  @ValidateIf((p) => p.content_posting_method === 'DIRECT_POST')
   @IsIn([
     'PUBLIC_TO_EVERYONE',
     'MUTUAL_FOLLOW_FRIENDS',
@@ -86,7 +92,7 @@ export class TikTokDto {
   @IsString()
   @JSONSchema({
     description:
-      'Applied only when content_posting_method=DIRECT_POST. Ignored by TikTok on UPLOAD.',
+      'Required for DIRECT_POST, and has no default: the user must choose it. Ignored by TikTok on UPLOAD.',
   })
   privacy_level:
     | 'PUBLIC_TO_EVERYONE'
